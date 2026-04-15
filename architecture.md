@@ -8,10 +8,16 @@
 - `src/utils`: config loader, math, logging, errors
 
 ## Pipeline stages
-1. Ingestion (multi-zip aggregated)
-2. Normalization + validation
-3. Dedup + exclusion accounting
-4. Model stage (valuation, rent, expenses, financing, risk, decision)
-5. Export stage (CSV/JSON/manifest)
+1. ingestion
+2. normalization
+3. validation
+4. deduplication
+5. valuation
+6. rent estimation
+7. expenses
+8. financing
+9. risk
+10. final decision
+11. export
 
 Every stage records row counts and exclusions/fallbacks via `RunContext`.

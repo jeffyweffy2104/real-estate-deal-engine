@@ -164,10 +164,9 @@ class RiskResult(BaseModel):
 
 class DecisionResult(BaseModel):
     final_decision: DecisionState
-    final_decision_explanation: str
     final_decision_reasons: list[str]
     final_decision_confidence: float
-    advisory_score: float
+    deal_status: str
     ranking_score: float
     watchouts: list[str] = Field(default_factory=list)
 
@@ -192,19 +191,19 @@ class FinalDealRecord(BaseModel):
     valuation_confidence: float
     valuation_method: str
     valuation_comp_count: int
-    estimated_monthly_rent: float | None = None
+    estimated_rent: float | None = None
     rent_low: float | None = None
     rent_high: float | None = None
     rent_confidence: float
     rent_method: str
     rent_comp_count: int
-    monthly_expenses_base: float
+    monthly_expenses: float
     annual_expenses_base: float
     monthly_expenses_downside: float
     monthly_expenses_upside: float
     loan_amount: float
     cash_to_close: float
-    monthly_debt_service: float
+    monthly_mortgage: float
     monthly_cash_flow: float
     annual_cash_flow: float
     cap_rate: float
@@ -215,10 +214,10 @@ class FinalDealRecord(BaseModel):
     risk_flags: list[str]
     risk_adjusted_cap_rate: float
     risk_adjusted_cash_on_cash: float
+    deal_status: str
     final_decision: DecisionState
     final_decision_reasons: list[str]
     final_decision_confidence: float
-    advisory_score: float
     ranking_score: float
     watchouts: list[str] = Field(default_factory=list)
     exclusion_flags: list[str] = Field(default_factory=list)

@@ -10,6 +10,12 @@ def _matches_property_type(target: NormalizedProperty, comp: NormalizedProperty)
     return not target.property_type or not comp.property_type or target.property_type == comp.property_type
 
 
+def _attribute_diff(target_value: float | None, comp_value: float | None) -> float | None:
+    if target_value is None or comp_value is None:
+        return None
+    return abs(comp_value - target_value)
+
+
 def select_sale_comps(
     target: NormalizedProperty,
     candidates: list[NormalizedProperty],
@@ -35,11 +41,11 @@ def select_sale_comps(
         if sqft_diff > max_sqft_diff_ratio:
             rejected["sqft"] += 1
             continue
-        bed_diff = abs((comp.beds or 0) - (target.beds or 0)) if target.beds and comp.beds else None
+        bed_diff = _attribute_diff(target.beds, comp.beds)
         if bed_diff is not None and bed_diff > max_bed_diff:
             rejected["beds"] += 1
             continue
-        bath_diff = abs((comp.baths or 0) - (target.baths or 0)) if target.baths and comp.baths else None
+        bath_diff = _attribute_diff(target.baths, comp.baths)
         if bath_diff is not None and bath_diff > max_bath_diff:
             rejected["baths"] += 1
             continue
@@ -76,11 +82,11 @@ def select_rent_comps(
         if sqft_diff > max_sqft_diff_ratio:
             rejected["sqft"] += 1
             continue
-        bed_diff = abs((comp.beds or 0) - (target.beds or 0)) if target.beds and comp.beds else None
+        bed_diff = _attribute_diff(target.beds, comp.beds)
         if bed_diff is not None and bed_diff > max_bed_diff:
             rejected["beds"] += 1
             continue
-        bath_diff = abs((comp.baths or 0) - (target.baths or 0)) if target.baths and comp.baths else None
+        bath_diff = _attribute_diff(target.baths, comp.baths)
         if bath_diff is not None and bath_diff > max_bath_diff:
             rejected["baths"] += 1
             continue

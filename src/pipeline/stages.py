@@ -20,27 +20,40 @@ class NeighborhoodProvider:
 
     def get_profile(self, zip_code: str) -> tuple[dict | None, float, str | None]:
         if zip_code in self.profiles:
-            return self.profiles[zip_code], 0.9, None
+            return {**self.profiles[zip_code], "profile_origin": "sourced"}, 0.9, None
         if self.allow_fallback:
-            return {"source": "inferred", "zip_code": zip_code}, 0.5, "missing_profile_inferred"
+            inferred_penalty = 0.35
+            inferred_confidence = max(0.05, 0.9 - inferred_penalty)
+            return {"source": "inferred", "zip_code": zip_code, "profile_origin": "fallback_inferred"}, inferred_confidence, "missing_profile_inferred"
         return None, 0.1, "missing_profile_unavailable"
 
 
-def normalize_stage(raw_sales: list[RawListing], ctx: RunContext) -> list[NormalizedProperty]:
+def normalization_stage(raw_sales: list[RawListing], ctx: RunContext) -> list[NormalizedProperty]:
     normalized: list[NormalizedProperty] = []
     for idx, raw in enumerate(raw_sales):
         prop, exclusions = normalize_listing(raw, ctx.run_id, idx)
-        if exclusions:
-            for exc in exclusions:
-                ctx.add_exclusion(exc.deal_id, exc.stage, exc.reason)
-            continue
-        normalized.append(prop)
-    deduped = dedupe_properties(normalized)
-    ctx.record_stage("normalize", len(raw_sales), len(deduped), len(raw_sales) - len(deduped))
+        if prop is not None:
+            normalized.append(prop)
+        for exc in exclusions:
+            ctx.add_exclusion(exc.deal_id, exc.stage, exc.reason)
+    ctx.record_stage("normalization", len(raw_sales), len(normalized), len(raw_sales) - len(normalized))
+    return normalized
+
+
+def validation_stage(normalized_sales: list[NormalizedProperty], ctx: RunContext) -> list[NormalizedProperty]:
+    # Pydantic validation already occurred in normalization; this explicit stage keeps contracts deterministic.
+    validated = normalized_sales
+    ctx.record_stage("validation", len(normalized_sales), len(validated), 0)
+    return validated
+
+
+def deduplication_stage(validated_sales: list[NormalizedProperty], ctx: RunContext) -> list[NormalizedProperty]:
+    deduped = dedupe_properties(validated_sales)
+    ctx.record_stage("deduplication", len(validated_sales), len(deduped), len(validated_sales) - len(deduped))
     return deduped
 
 
-def model_stage(
+def underwriting_stage(
     sales: list[NormalizedProperty],
     rents: list[NormalizedProperty],
     cfg: dict,
@@ -51,8 +64,10 @@ def model_stage(
 
     for prop in sales:
         profile, neighborhood_confidence, neighborhood_reason = neighborhood_provider.get_profile(prop.zip_code)
+        record_fallback_flags = list(prop.fallback_flags)
         if neighborhood_reason:
             ctx.add_fallback(prop.deal_id, "neighborhood", profile["source"] if profile else "none", neighborhood_reason)
+            record_fallback_flags.append(f"neighborhood:{neighborhood_reason}")
 
         sale_comps, sale_rejected = select_sale_comps(
             prop,
@@ -80,6 +95,7 @@ def model_stage(
         rent_result = estimate_rent(rent_comps, prop.sqft, prop.source_market, cfg["rent"]["fallback_rent_per_sqft_by_market"])
         if rent_result.rent_method != "rental_comps_trimmed_median":
             ctx.add_fallback(prop.deal_id, "rent", "fallback_rent_psf", "insufficient_rent_comps")
+            record_fallback_flags.append("rent:insufficient_rent_comps")
 
         expense_result = estimate_expenses(
             monthly_rent=rent_result.estimated_monthly_rent or 0,
@@ -90,6 +106,7 @@ def model_stage(
         )
         for f in expense_result.fallback_flags:
             ctx.add_fallback(prop.deal_id, "expenses", "assumption", f)
+            record_fallback_flags.append(f"expenses:{f}")
 
         financing = underwrite_financing(
             price=prop.price,
@@ -134,19 +151,19 @@ def model_stage(
                 valuation_confidence=valuation.valuation_confidence,
                 valuation_method=valuation.valuation_method,
                 valuation_comp_count=valuation.comp_count,
-                estimated_monthly_rent=rent_result.estimated_monthly_rent,
+                estimated_rent=rent_result.estimated_monthly_rent,
                 rent_low=rent_result.low_rent,
                 rent_high=rent_result.high_rent,
                 rent_confidence=rent_result.rent_confidence,
                 rent_method=rent_result.rent_method,
                 rent_comp_count=rent_result.rent_comp_count,
-                monthly_expenses_base=expense_result.monthly_expenses_base,
+                monthly_expenses=expense_result.monthly_expenses_base,
                 annual_expenses_base=expense_result.annual_expenses_base,
                 monthly_expenses_downside=expense_result.monthly_expenses_downside,
                 monthly_expenses_upside=expense_result.monthly_expenses_upside,
                 loan_amount=financing.loan_amount,
                 cash_to_close=financing.cash_to_close,
-                monthly_debt_service=financing.monthly_debt_service,
+                monthly_mortgage=financing.monthly_debt_service,
                 monthly_cash_flow=financing.monthly_cash_flow,
                 annual_cash_flow=financing.annual_cash_flow,
                 cap_rate=financing.cap_rate,
@@ -157,14 +174,14 @@ def model_stage(
                 risk_flags=risk.risk_flags,
                 risk_adjusted_cap_rate=risk.risk_adjusted_metrics["risk_adjusted_cap_rate"],
                 risk_adjusted_cash_on_cash=risk.risk_adjusted_metrics["risk_adjusted_cash_on_cash"],
+                deal_status=decision.deal_status,
                 final_decision=decision.final_decision,
                 final_decision_reasons=decision.final_decision_reasons,
                 final_decision_confidence=decision.final_decision_confidence,
-                advisory_score=decision.advisory_score,
                 ranking_score=decision.ranking_score,
                 watchouts=decision.watchouts,
                 exclusion_flags=prop.exclusion_flags,
-                fallback_flags=[*prop.fallback_flags, *expense_result.fallback_flags],
+                fallback_flags=record_fallback_flags,
                 data_quality_confidence=data_quality_conf,
                 neighborhood_confidence=neighborhood_confidence,
                 overall_decision_confidence=overall_conf,
@@ -173,5 +190,5 @@ def model_stage(
             )
         )
 
-    ctx.record_stage("model", len(sales), len(records), 0)
+    ctx.record_stage("final_decision", len(sales), len(records), 0)
     return records

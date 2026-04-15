@@ -35,4 +35,6 @@ def test_decision_consistency_no_contradictory_fields():
     records, _, _ = run_pipeline(cfg, DeterministicProvider())
     rec = records[0]
     assert rec.final_decision is not None
+    assert rec.deal_status in {"ACTIVE", "REJECTED"}
     assert not hasattr(rec, "recommendation")
+    assert rec.ranking_score >= 0

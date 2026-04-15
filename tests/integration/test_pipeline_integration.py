@@ -27,3 +27,19 @@ def test_end_to_end_and_multizip_and_export_ready():
     assert manifest["source_counts"]["sales_total"] == 4
     assert "neighborhood" in manifest["fallback_counts"]
     assert all(r.final_decision for r in records)
+    assert set(
+        [
+            "ingestion_sales",
+            "ingestion_rents",
+            "normalization",
+            "validation",
+            "deduplication",
+            "valuation",
+            "rent_estimation",
+            "expenses",
+            "financing",
+            "risk",
+            "final_decision",
+            "export",
+        ]
+    ).issubset(set(manifest["stage_counts"].keys()))
