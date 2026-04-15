@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+import json
+import os
+
+from src.data.schemas import FinalDealRecord
+
+
+def export_json(records: list[FinalDealRecord], output_dir: str, filename: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    payload = [r.model_dump(mode="json") for r in records]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, sort_keys=True, indent=2)
+    return path
