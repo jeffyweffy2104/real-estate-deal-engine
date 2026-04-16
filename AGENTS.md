@@ -20,18 +20,19 @@ This repository is being upgraded from a prototype real-estate deal screening en
 - Do not dynamically export unstable arbitrary fields.
 - Prefer explicit typed schemas and validated stage contracts.
 
-## Expected workflow
-1. Analyze the repository
-2. Propose a migration plan
-3. Refactor architecture
-4. Implement schemas
-5. Rebuild pipeline
-6. Rebuild modeling modules
-7. Rebuild decisioning
-8. Build exporters and manifest
-9. Add tests
-10. Update docs
-11. Run tests and report results
+## Active runtime contract
+- Active shell entrypoint: `run.sh`
+- Active Python entrypoint: `main.py`
+- Active orchestrator: `src/pipeline/orchestrator.py`
+- Active CSV writer: `src/export/csv_exporter.py`
+- Canonical final decision field: `final_decision`
+- Advisory-only ranking field: `ranking_score`
+- Legacy verdict fields `recommendation` and `investment_decision` must not appear in live outputs.
+
+## Baltimore market contract
+- Preferred market preset: `baltimore_city_full`
+- Runs must retain full multi-ZIP city aggregation through all pipeline stages.
+- Records must carry `zip_code`, `source_market`, and neighborhood/submarket metadata when available.
 
 ## Testing expectations
 - Add unit, integration, and regression tests

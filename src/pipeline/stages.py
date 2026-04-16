@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
+
 from src.data.deduplication import dedupe_properties
+from src.data.neighborhoods import BALTIMORE_NEIGHBORHOOD_BY_ZIP
 from src.data.normalization import normalize_listing
 from src.data.schemas import FinalDealRecord, NormalizedProperty, RawListing
 from src.models.comps import estimate_valuation_from_comps, select_rent_comps, select_sale_comps
@@ -18,14 +21,21 @@ class NeighborhoodProvider:
         self.profiles = profiles or {}
         self.allow_fallback = allow_fallback
 
-    def get_profile(self, zip_code: str) -> tuple[dict | None, float, str | None]:
+    def get_profile(self, zip_code: str) -> tuple[dict | None, float, str | None, str]:
         if zip_code in self.profiles:
-            return {**self.profiles[zip_code], "profile_origin": "sourced"}, 0.9, None
+            profile = {**self.profiles[zip_code], "profile_origin": "sourced"}
+            return profile, 0.92, None, "sourced"
+
+        if zip_code in BALTIMORE_NEIGHBORHOOD_BY_ZIP:
+            profile = {**BALTIMORE_NEIGHBORHOOD_BY_ZIP[zip_code], "profile_origin": "sourced_local_zip_map"}
+            return profile, 0.82, None, "sourced"
+
         if self.allow_fallback:
-            inferred_penalty = 0.35
-            inferred_confidence = max(0.05, 0.9 - inferred_penalty)
-            return {"source": "inferred", "zip_code": zip_code, "profile_origin": "fallback_inferred"}, inferred_confidence, "missing_profile_inferred"
-        return None, 0.1, "missing_profile_unavailable"
+            inferred_penalty = 0.4
+            inferred_confidence = max(0.05, 0.85 - inferred_penalty)
+            return {"zip_code": zip_code, "profile_origin": "fallback_inferred"}, inferred_confidence, "missing_profile_inferred", "inferred"
+
+        return None, 0.08, "missing_profile_unavailable", "unavailable"
 
 
 def normalization_stage(raw_sales: list[RawListing], ctx: RunContext) -> list[NormalizedProperty]:
@@ -41,7 +51,6 @@ def normalization_stage(raw_sales: list[RawListing], ctx: RunContext) -> list[No
 
 
 def validation_stage(normalized_sales: list[NormalizedProperty], ctx: RunContext) -> list[NormalizedProperty]:
-    # Pydantic validation already occurred in normalization; this explicit stage keeps contracts deterministic.
     validated = normalized_sales
     ctx.record_stage("validation", len(normalized_sales), len(validated), 0)
     return validated
@@ -63,39 +72,55 @@ def underwriting_stage(
     records: list[FinalDealRecord] = []
 
     for prop in sales:
-        profile, neighborhood_confidence, neighborhood_reason = neighborhood_provider.get_profile(prop.zip_code)
+        profile, neighborhood_confidence, neighborhood_reason, neighborhood_data_source = neighborhood_provider.get_profile(prop.zip_code)
         record_fallback_flags = list(prop.fallback_flags)
         if neighborhood_reason:
-            ctx.add_fallback(prop.deal_id, "neighborhood", profile["source"] if profile else "none", neighborhood_reason)
+            ctx.add_fallback(prop.deal_id, "neighborhood", profile.get("profile_origin", "none") if profile else "none", neighborhood_reason)
             record_fallback_flags.append(f"neighborhood:{neighborhood_reason}")
+            ctx.add_metric("missing_neighborhood_mappings", 1)
 
-        sale_comps, sale_rejected = select_sale_comps(
+        comp_start = time.perf_counter()
+        sale_comps, sale_rejected, sale_stats = select_sale_comps(
             prop,
             sales,
             cfg["valuation"]["max_distance_miles"],
             cfg["valuation"]["max_sqft_diff_ratio"],
             cfg["valuation"]["max_bed_diff"],
             cfg["valuation"]["max_bath_diff"],
+            cfg["valuation"]["candidate_pool_limit"],
         )
         valuation = estimate_valuation_from_comps(sale_comps, cfg["valuation"]["min_comp_count"])
         valuation.selection_stats = {
-            "candidate_count": len(sales),
+            "candidate_count": sale_stats["candidate_count"],
             "accepted_count": len(sale_comps),
-            "rejected_by_reason": sale_rejected,
+            "rejected_count_by_reason": sale_rejected,
         }
+        if valuation.valuation_method != "median_trimmed_ppsf":
+            ctx.add_fallback(prop.deal_id, "valuation", "fallback", "insufficient_sale_comps")
+            record_fallback_flags.append("valuation:insufficient_sale_comps")
+            ctx.add_metric("fallback_valuations", 1)
 
-        rent_comps, rent_rejected = select_rent_comps(
+        rent_comps, rent_rejected, rent_stats = select_rent_comps(
             prop,
             rents,
             cfg["rent"]["max_distance_miles"],
             cfg["rent"]["max_sqft_diff_ratio"],
             cfg["valuation"]["max_bed_diff"],
             cfg["valuation"]["max_bath_diff"],
+            cfg["rent"]["candidate_pool_limit"],
         )
         rent_result = estimate_rent(rent_comps, prop.sqft, prop.source_market, cfg["rent"]["fallback_rent_per_sqft_by_market"])
+        rent_result.selection_stats = {
+            "candidate_count": rent_stats["candidate_count"],
+            "accepted_count": len(rent_comps),
+            "rejected_count_by_reason": rent_rejected,
+        }
+        ctx.add_metric("comp_search_seconds", time.perf_counter() - comp_start)
+
         if rent_result.rent_method != "rental_comps_trimmed_median":
             ctx.add_fallback(prop.deal_id, "rent", "fallback_rent_psf", "insufficient_rent_comps")
             record_fallback_flags.append("rent:insufficient_rent_comps")
+            ctx.add_metric("fallback_rent_estimates", 1)
 
         expense_result = estimate_expenses(
             monthly_rent=rent_result.estimated_monthly_rent or 0,
@@ -116,7 +141,7 @@ def underwriting_stage(
             cfg=cfg["financing"],
         )
 
-        data_quality_conf = compute_data_quality_confidence(True, True, len(prop.fallback_flags) + len(expense_result.fallback_flags))
+        data_quality_conf = compute_data_quality_confidence(True, True, len(record_fallback_flags))
         overall_conf = combine_confidences(
             valuation.valuation_confidence,
             rent_result.rent_confidence,
@@ -126,6 +151,9 @@ def underwriting_stage(
         risk = assess_risk(financing.dscr, financing.cap_rate, financing.monthly_cash_flow, overall_conf, cfg["risk"]["weights"])
         decision = decide(financing.cap_rate, financing.dscr, financing.cash_on_cash_return, risk.risk_score, overall_conf)
 
+        if decision.final_decision.value in {"REJECT", "WATCHLIST", "BUY", "STRONG_BUY"}:
+            ctx.add_metric(f"decision_{decision.final_decision.value.lower()}", 1)
+
         discount = None
         if valuation.estimated_market_value:
             discount = round((valuation.estimated_market_value - prop.price) / valuation.estimated_market_value, 4)
@@ -133,11 +161,14 @@ def underwriting_stage(
         records.append(
             FinalDealRecord(
                 deal_id=prop.deal_id,
+                source_run_id=prop.source_run_id,
                 address=prop.address,
                 zip_code=prop.zip_code,
                 listing_url=prop.listing_url,
                 source_market=prop.source_market,
-                source_run_id=prop.source_run_id,
+                neighborhood=profile.get("neighborhood") if profile else None,
+                submarket=profile.get("submarket") if profile else None,
+                neighborhood_data_source=neighborhood_data_source,
                 price=prop.price,
                 sqft=prop.sqft,
                 beds=prop.beds,
@@ -151,12 +182,16 @@ def underwriting_stage(
                 valuation_confidence=valuation.valuation_confidence,
                 valuation_method=valuation.valuation_method,
                 valuation_comp_count=valuation.comp_count,
+                valuation_candidate_count=valuation.selection_stats.get("candidate_count", 0),
+                valuation_rejected_count_by_reason=valuation.selection_stats.get("rejected_count_by_reason", {}),
                 estimated_rent=rent_result.estimated_monthly_rent,
                 rent_low=rent_result.low_rent,
                 rent_high=rent_result.high_rent,
                 rent_confidence=rent_result.rent_confidence,
                 rent_method=rent_result.rent_method,
                 rent_comp_count=rent_result.rent_comp_count,
+                rent_candidate_count=rent_result.selection_stats.get("candidate_count", 0),
+                rent_rejected_count_by_reason=rent_result.selection_stats.get("rejected_count_by_reason", {}),
                 monthly_expenses=expense_result.monthly_expenses_base,
                 annual_expenses_base=expense_result.annual_expenses_base,
                 monthly_expenses_downside=expense_result.monthly_expenses_downside,
@@ -181,11 +216,12 @@ def underwriting_stage(
                 ranking_score=decision.ranking_score,
                 watchouts=decision.watchouts,
                 exclusion_flags=prop.exclusion_flags,
-                fallback_flags=record_fallback_flags,
+                fallback_flags=sorted(set(record_fallback_flags)),
                 data_quality_confidence=data_quality_conf,
                 neighborhood_confidence=neighborhood_confidence,
                 overall_decision_confidence=overall_conf,
                 assumptions_version=cfg["assumptions_version"],
+                pipeline_version=cfg["pipeline_version"],
                 model_version=cfg["model_version"],
             )
         )

@@ -1,4 +1,6 @@
 from src.data.ingestion import IngestionProvider
+from src.export.csv_exporter import CSV_COLUMNS, export_csv
+from src.export.manifest import build_manifest, export_manifest
 from src.pipeline.orchestrator import run_pipeline
 from src.utils.config_loader import load_config
 
@@ -20,13 +22,23 @@ class FakeProvider(IngestionProvider):
         return [base, {**base, "property_id": f"{listing_type}-{zip_code}-2", "list_price": base["list_price"] * 1.05}]
 
 
-def test_end_to_end_and_multizip_and_export_ready():
+def test_end_to_end_and_multizip_and_manifest_contract(tmp_path):
     cfg = load_config({"market": {"name": "m", "zip_codes": ["11111", "22222"]}}).model_dump()
-    records, ctx, manifest = run_pipeline(cfg, FakeProvider(), neighborhood_profiles={"11111": {"quality": "A"}})
+    records, _, manifest_stub = run_pipeline(cfg, FakeProvider(), neighborhood_profiles={"11111": {"quality": "A"}})
     assert len(records) == 4
-    assert manifest["source_counts"]["sales_total"] == 4
-    assert "neighborhood" in manifest["fallback_counts"]
+    assert len({r.zip_code for r in records}) == 2
+    assert manifest_stub["source_counts"]["sales_total"] == 4
+    assert "neighborhood" in manifest_stub["fallback_counts"]
     assert all(r.final_decision for r in records)
+
+    csv_path = export_csv(records, str(tmp_path), "deals.csv")
+    manifest = build_manifest(manifest_stub, {"csv": csv_path, "json": "fake.json", "views": "views.json"})
+    manifest_path = export_manifest(manifest, str(tmp_path), "manifest.json")
+
+    assert manifest_path.endswith("manifest.json")
+    assert manifest.pipeline_version
+    assert manifest.model_version
+    assert "comp_search_seconds" in manifest.performance_metrics
     assert set(
         [
             "ingestion_sales",
@@ -42,4 +54,20 @@ def test_end_to_end_and_multizip_and_export_ready():
             "final_decision",
             "export",
         ]
-    ).issubset(set(manifest["stage_counts"].keys()))
+    ).issubset(set(manifest.stage_counts.keys()))
+
+
+def test_live_export_path_uses_canonical_schema_only(tmp_path):
+    cfg = load_config({"market": {"name": "m", "zip_codes": ["11111"]}}).model_dump()
+    records, _, _ = run_pipeline(cfg, FakeProvider(), neighborhood_profiles={})
+    csv_path = export_csv(records, str(tmp_path), "deals.csv")
+
+    import csv
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == CSV_COLUMNS
+        row = next(reader)
+        assert "final_decision" in row
+        assert "recommendation" not in row
+        assert "investment_decision" not in row

@@ -1,11 +1,52 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from pydantic import BaseModel, Field
+
+BALTIMORE_CITY_ZIPS = [
+    "21201",
+    "21202",
+    "21205",
+    "21206",
+    "21207",
+    "21209",
+    "21210",
+    "21211",
+    "21212",
+    "21213",
+    "21214",
+    "21215",
+    "21216",
+    "21217",
+    "21218",
+    "21223",
+    "21224",
+    "21225",
+    "21226",
+    "21229",
+    "21230",
+    "21231",
+    "21234",
+    "21236",
+    "21237",
+    "21239",
+    "21251",
+]
+
+
+MARKET_PRESETS = {
+    "baltimore_city_full": {
+        "name": "baltimore_city_full",
+        "zip_codes": BALTIMORE_CITY_ZIPS,
+    }
+}
 
 
 class MarketConfig(BaseModel):
     name: str = "default"
     zip_codes: list[str] = Field(default_factory=list)
+    preset: str | None = None
 
 
 class IngestionConfig(BaseModel):
@@ -23,12 +64,14 @@ class ValuationConfig(BaseModel):
     max_bed_diff: float = 1.0
     max_bath_diff: float = 1.0
     min_comp_count: int = 3
+    candidate_pool_limit: int = 250
 
 
 class RentConfig(BaseModel):
     max_distance_miles: float = 2.0
     max_sqft_diff_ratio: float = 0.4
     fallback_rent_per_sqft_by_market: dict[str, float] = Field(default_factory=lambda: {"default": 0.9})
+    candidate_pool_limit: int = 250
 
 
 class ExpenseConfig(BaseModel):
@@ -68,7 +111,8 @@ class ExportConfig(BaseModel):
 
 class RootConfig(BaseModel):
     assumptions_version: str = "2026.04"
-    model_version: str = "v2.0.0"
+    pipeline_version: str = "pipeline_v3_canonical"
+    model_version: str = "v3.0.0"
     market: MarketConfig = Field(default_factory=MarketConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     property_filters: PropertyFilterConfig = Field(default_factory=PropertyFilterConfig)
@@ -81,11 +125,33 @@ class RootConfig(BaseModel):
     exports: ExportConfig = Field(default_factory=ExportConfig)
 
 
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    merged = deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(overrides: dict | None = None) -> RootConfig:
     base = RootConfig()
-    if not overrides:
-        return base
     merged = base.model_dump()
-    for key, value in overrides.items():
-        merged[key] = value
+
+    if overrides:
+        merged = _deep_merge(merged, overrides)
+
+    market_cfg = merged.get("market", {})
+    preset = market_cfg.get("preset")
+    if preset:
+        if preset not in MARKET_PRESETS:
+            raise ValueError(f"Unknown market preset: {preset}")
+        preset_cfg = deepcopy(MARKET_PRESETS[preset])
+        if market_cfg.get("zip_codes"):
+            preset_cfg["zip_codes"] = market_cfg["zip_codes"]
+        preset_cfg["name"] = market_cfg.get("name") or preset_cfg["name"]
+        preset_cfg["preset"] = preset
+        merged["market"] = preset_cfg
+
     return RootConfig.model_validate(merged)

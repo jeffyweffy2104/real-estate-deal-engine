@@ -123,6 +123,7 @@ class RentEstimateResult(BaseModel):
     rent_confidence: float
     rent_method: str
     rent_notes: list[str] = Field(default_factory=list)
+    selection_stats: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExpenseScenario(BaseModel):
@@ -173,11 +174,14 @@ class DecisionResult(BaseModel):
 
 class FinalDealRecord(BaseModel):
     deal_id: str
+    source_run_id: str
     address: str
     zip_code: str
     listing_url: str | None = None
     source_market: str
-    source_run_id: str
+    neighborhood: str | None = None
+    submarket: str | None = None
+    neighborhood_data_source: str
     price: float
     sqft: float
     beds: float | None = None
@@ -191,12 +195,16 @@ class FinalDealRecord(BaseModel):
     valuation_confidence: float
     valuation_method: str
     valuation_comp_count: int
+    valuation_candidate_count: int = 0
+    valuation_rejected_count_by_reason: dict[str, int] = Field(default_factory=dict)
     estimated_rent: float | None = None
     rent_low: float | None = None
     rent_high: float | None = None
     rent_confidence: float
     rent_method: str
     rent_comp_count: int
+    rent_candidate_count: int = 0
+    rent_rejected_count_by_reason: dict[str, int] = Field(default_factory=dict)
     monthly_expenses: float
     annual_expenses_base: float
     monthly_expenses_downside: float
@@ -226,6 +234,7 @@ class FinalDealRecord(BaseModel):
     neighborhood_confidence: float
     overall_decision_confidence: float
     assumptions_version: str
+    pipeline_version: str
     model_version: str
 
 
@@ -238,6 +247,8 @@ class RunManifest(BaseModel):
     source_counts: dict[str, int]
     stage_counts: dict[str, dict[str, int]]
     fallback_counts: dict[str, int]
+    performance_metrics: dict[str, Any] = Field(default_factory=dict)
     output_files: dict[str, str]
     warnings: list[str] = Field(default_factory=list)
-    model_versions: dict[str, str]
+    pipeline_version: str
+    model_version: str

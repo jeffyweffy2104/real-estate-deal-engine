@@ -15,7 +15,7 @@ def estimate_rent(
         cleaned = trimmed(rents, 0.1)
         est = median(cleaned)
         spread = max(cleaned) - min(cleaned) if len(cleaned) > 1 else est * 0.1
-        confidence = max(0.1, min(0.98, 0.5 + len(rent_comps) * 0.07))
+        confidence = max(0.1, min(0.98, 0.45 + len(rent_comps) * 0.08))
         return RentEstimateResult(
             estimated_monthly_rent=round(est, 2),
             low_rent=round(est - 0.5 * spread, 2),
@@ -33,7 +33,7 @@ def estimate_rent(
         low_rent=round(est * 0.9, 2),
         high_rent=round(est * 1.1, 2),
         rent_comp_count=0,
-        rent_confidence=0.35,
+        rent_confidence=0.22,
         rent_method="fallback_rent_psf",
         rent_notes=["Fallback method used: market rent per sqft assumption."],
     )
