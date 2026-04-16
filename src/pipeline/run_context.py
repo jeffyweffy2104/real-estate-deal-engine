@@ -15,6 +15,7 @@ class RunContext:
     exclusions: list[dict] = field(default_factory=list)
     fallbacks: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    metrics: dict[str, float | int] = field(default_factory=lambda: defaultdict(float))
 
     def record_stage(self, stage: str, in_count: int, out_count: int, excluded_count: int = 0) -> None:
         self.stage_counts[stage] = {"in": in_count, "out": out_count, "excluded": excluded_count}
@@ -24,6 +25,9 @@ class RunContext:
 
     def add_fallback(self, deal_id: str, module: str, source: str, reason: str) -> None:
         self.fallbacks.append({"deal_id": deal_id, "module": module, "source": source, "reason": reason})
+
+    def add_metric(self, name: str, value: int | float = 1) -> None:
+        self.metrics[name] = self.metrics.get(name, 0) + value
 
     def fallback_counts(self) -> dict[str, int]:
         c = Counter([f["module"] for f in self.fallbacks])

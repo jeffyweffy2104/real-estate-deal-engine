@@ -1,49 +1,63 @@
-# Institutional Underwriting Engine Foundation
+# Institutional Underwriting Decision Engine (Canonical v3)
 
-This repository implements a deterministic underwriting pipeline with one canonical final decision path, explicit fallback labeling, and stable exports.
+This repository now runs a **single canonical pipeline** from `run.sh` → `main.py` → `src/pipeline/orchestrator.py` and exports only canonical decision/output fields.
 
-## Quickstart
+## Active Entrypoint and Live Path
+
+- Shell entrypoint: `./run.sh`
+- Python entrypoint: `main.py`
+- Canonical pipeline: `src/pipeline/orchestrator.py` + `src/pipeline/stages.py`
+- Canonical CSV exporter: `src/export/csv_exporter.py`
+- Canonical JSON exporter: `src/export/json_exporter.py`
+- Manifest writer: `src/export/manifest.py`
+
+Legacy top-level prototype modules are deprecated and fail fast if imported.
+
+## Run
 
 ```bash
 python -m pip install -r requirements.txt
-pytest
-python main.py
+./run.sh
 ```
 
-Outputs are written to `outputs/`:
+Outputs in `outputs/`:
 - `deals_<timestamp>.csv`
 - `deals_<timestamp>.json`
+- `views_<run_id>.json`
 - `manifest_<timestamp>.json`
 
-## Architecture
+## Baltimore city-scale mode
 
-See `architecture.md` for stage-by-stage design and contracts.
+Default config enables `market.preset = baltimore_city_full`, which scans all configured Baltimore city ZIPs in one aggregated run.
 
-## Canonical Modules
+## Canonical final decision framework
 
-Active runtime modules:
-- `src/data/*` for ingestion/normalization/validation/deduplication
-- `src/models/*` for valuation, rent, expenses, financing, risk, and canonical decisioning
-- `src/pipeline/*` for orchestration and stage accounting
-- `src/export/*` for deterministic CSV/JSON/manifest output
+Only one final verdict field exists: `final_decision` with states:
+- `REJECT`
+- `WATCHLIST`
+- `REVIEW`
+- `CONDITIONAL_BUY`
+- `BUY`
+- `STRONG_BUY`
 
-Deprecated modules (not used by pipeline):
-- Top-level legacy files such as `deal_analysis.py`, `comps.py`, `financing.py`, `rent_model.py`, `scoring.py`, `exporter.py`, and other prototype files intentionally raise a runtime error if imported.
+`ranking_score` is advisory/ranking-only.
 
-## Final Decision Contract
+## Confidence and fallback visibility
 
-Only one final decision path is allowed:
-- REJECT
-- WATCHLIST
-- REVIEW
-- CONDITIONAL_BUY
-- BUY
-- STRONG_BUY
+Outputs include:
+- `valuation_confidence`
+- `rent_confidence`
+- `neighborhood_confidence`
+- `data_quality_confidence`
+- `overall_decision_confidence`
+- `fallback_flags`
 
-`final_decision` is authoritative. `ranking_score` is advisory/ranking-only and never overrides `final_decision`.
+Fallback estimates are explicitly labeled and confidence-penalized.
 
-## Fallback and Confidence Semantics
+## Tests
 
-- `fallback_flags`: explicit labels indicating inferred/assumed data usage (for example neighborhood profile inference, rent fallback, tax assumptions).
-- `valuation_confidence`, `rent_confidence`, `neighborhood_confidence`: model-level confidence channels.
-- `overall_decision_confidence`: combined confidence used by risk and decisioning.
+```bash
+pytest
+```
+
+See `testing.md` for coverage details.

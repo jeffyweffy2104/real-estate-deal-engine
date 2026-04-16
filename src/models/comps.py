@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 
 from src.data.schemas import NormalizedProperty, RentComparable, SaleComparable, ValuationResult
 from src.utils.math_utils import haversine_miles, median, trimmed
@@ -16,6 +17,28 @@ def _attribute_diff(target_value: float | None, comp_value: float | None) -> flo
     return abs(comp_value - target_value)
 
 
+def _narrow_candidates(
+    target: NormalizedProperty,
+    candidates: list[NormalizedProperty],
+    max_distance_miles: float,
+    candidate_pool_limit: int,
+) -> list[tuple[NormalizedProperty, float]]:
+    # Approximate lat/lon bounding box pre-filter, then sort by exact distance.
+    lat_buffer = max_distance_miles / 69.0
+    lon_denominator = max(0.01, 69.0 * abs(math.cos(math.radians(target.latitude))))
+    lon_buffer = max_distance_miles / lon_denominator
+
+    narrowed: list[tuple[NormalizedProperty, float]] = []
+    for comp in candidates:
+        if abs(comp.latitude - target.latitude) > lat_buffer or abs(comp.longitude - target.longitude) > lon_buffer:
+            continue
+        distance = haversine_miles(target.latitude, target.longitude, comp.latitude, comp.longitude)
+        narrowed.append((comp, distance))
+
+    narrowed.sort(key=lambda x: x[1])
+    return narrowed[:candidate_pool_limit]
+
+
 def select_sale_comps(
     target: NormalizedProperty,
     candidates: list[NormalizedProperty],
@@ -23,17 +46,19 @@ def select_sale_comps(
     max_sqft_diff_ratio: float,
     max_bed_diff: float,
     max_bath_diff: float,
-) -> tuple[list[SaleComparable], dict[str, int]]:
+    candidate_pool_limit: int,
+) -> tuple[list[SaleComparable], dict[str, int], dict[str, int]]:
     accepted: list[SaleComparable] = []
     rejected = Counter()
-    for comp in candidates:
+
+    narrowed = _narrow_candidates(target, candidates, max_distance_miles * 1.6, candidate_pool_limit)
+    for comp, distance in narrowed:
         if comp.deal_id == target.deal_id:
             rejected["self"] += 1
             continue
         if not _matches_property_type(target, comp):
             rejected["property_type"] += 1
             continue
-        distance = haversine_miles(target.latitude, target.longitude, comp.latitude, comp.longitude)
         if distance > max_distance_miles:
             rejected["distance"] += 1
             continue
@@ -60,7 +85,13 @@ def select_sale_comps(
                 sqft=comp.sqft,
             )
         )
-    return accepted, dict(rejected)
+
+    stats = {
+        "input_count": len(candidates),
+        "candidate_count": len(narrowed),
+        "accepted_count": len(accepted),
+    }
+    return accepted, dict(rejected), stats
 
 
 def select_rent_comps(
@@ -70,11 +101,13 @@ def select_rent_comps(
     max_sqft_diff_ratio: float,
     max_bed_diff: float,
     max_bath_diff: float,
-) -> tuple[list[RentComparable], dict[str, int]]:
+    candidate_pool_limit: int,
+) -> tuple[list[RentComparable], dict[str, int], dict[str, int]]:
     accepted: list[RentComparable] = []
     rejected = Counter()
-    for comp in rental_candidates:
-        distance = haversine_miles(target.latitude, target.longitude, comp.latitude, comp.longitude)
+
+    narrowed = _narrow_candidates(target, rental_candidates, max_distance_miles * 1.6, candidate_pool_limit)
+    for comp, distance in narrowed:
         if distance > max_distance_miles:
             rejected["distance"] += 1
             continue
@@ -90,6 +123,9 @@ def select_rent_comps(
         if bath_diff is not None and bath_diff > max_bath_diff:
             rejected["baths"] += 1
             continue
+        if not _matches_property_type(target, comp):
+            rejected["property_type"] += 1
+            continue
         accepted.append(
             RentComparable(
                 deal_id=comp.deal_id,
@@ -100,15 +136,21 @@ def select_rent_comps(
                 monthly_rent=comp.price,
             )
         )
-    return accepted, dict(rejected)
+
+    stats = {
+        "input_count": len(rental_candidates),
+        "candidate_count": len(narrowed),
+        "accepted_count": len(accepted),
+    }
+    return accepted, dict(rejected), stats
 
 
 def estimate_valuation_from_comps(comps: list[SaleComparable], min_comp_count: int = 3) -> ValuationResult:
     if not comps:
         return ValuationResult(
             comp_count=0,
-            valuation_confidence=0.1,
-            valuation_method="no_comps",
+            valuation_confidence=0.08,
+            valuation_method="no_comps_fallback",
             valuation_notes=["No sale comps available."],
         )
     ppsf = [c.sale_price / c.sqft for c in comps if c.sqft > 0]
@@ -119,7 +161,7 @@ def estimate_valuation_from_comps(comps: list[SaleComparable], min_comp_count: i
     spread = max(cleaned) - min(cleaned) if len(cleaned) > 1 else est_ppsf * 0.1
     confidence = 0.45 + min(0.5, len(comps) / max(min_comp_count, 1) * 0.25)
     if len(comps) < min_comp_count:
-        confidence -= 0.2
+        confidence -= 0.25
     confidence = max(0.05, min(0.98, confidence))
     return ValuationResult(
         estimated_market_value=round(est, 2),
